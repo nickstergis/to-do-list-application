@@ -1,0 +1,1095 @@
+var express = require("express"); // Import the Express framework
+const nodeMailer = require('nodemailer'); // Import the Nodemailer package for sending emails
+var mysql = require("mysql"); // Import MySQL module to connect with the MySQL database
+var app = express(); // Initialize the Express app
+var bodyParser = require('body-parser'); // Import body-parser to handle HTTP request bodies
+const { query } = require("express"); // Destructure and extract 'query' from the express module
+const cors = require('cors'); // Import CORS middleware to handle cross-origin requests
+
+// Configure middleware
+app.use(express.json()); // Parse incoming JSON requests automatically
+app.use(bodyParser.urlencoded({ extended: true })); // Parse URL-encoded bodies
+app.use(bodyParser.json()); // Parse incoming JSON data into req.body
+app.use(cors()); // Allow cross-origin resource sharing (CORS) for security
+
+// Database connection settings
+const con = mysql.createConnection({
+    host: "localhost", // Hostname for the MySQL server
+    user: "root", // MySQL username
+    password: "", // MySQL password (empty in this example)
+    database: "todo", // Name of the database to connect to
+    connectionLimit: 10 // Limit of concurrent connections to the database
+});
+
+// Establish connection with the MySQL database
+con.connect((error) => {
+    if (error) {
+        console.log(error); // Log an error message if connection fails
+    } else {
+        console.log("connected !!"); // Log success message if connection is established
+    }
+});
+
+// Start server on port 4000
+app.listen(4000, (error) => {
+    if (error) {
+        console.log(error); // Log an error message if the server fails to start
+    } else {
+        console.log("on port 4000"); // Log a success message once the server starts
+    }
+});
+
+
+
+// Route to retrieve all non-admin users from the database
+app.get('/users', (req, res) => {
+    const sqlQuery = `SELECT * FROM todo.users WHERE is_admin = 0`; // SQL query to select non-admin users
+
+    // Execute the query
+    con.query(sqlQuery, (error, result) => {
+        if (error) {
+            res.status(400).json(error); // Send a 400 response code with error information if query fails
+        } else {
+            res.status(200).json(result); // Send a 200 response code with the result set if query succeeds
+        }
+    });
+});
+
+// Route to retrieve log messages based on user roles
+app.get('/logs', (req, res) => {
+    const userId = req.query.user_id; // Extract the user ID from the query parameter
+    let sqlQuery; // SQL query to be executed
+    let sqlParams; // Parameters for the SQL query
+
+    // Check if the user is an admin based on user ID
+    if (userId === '146') {
+        // If the user is an admin (user ID 146), retrieve all log messages
+        sqlQuery = 'SELECT * FROM logs ORDER BY timestamp DESC'; // Fetch all logs ordered by timestamp
+        sqlParams = []; // No parameters needed for the query
+    } else {
+        // If the user is a regular user, retrieve only their specific log messages
+        sqlQuery = 'SELECT logs.log_id, logs.log_message, logs.timestamp, users.name ' +
+                   'FROM logs ' +
+                   'INNER JOIN users ON logs.user_id = users.id ' +
+                   'WHERE logs.user_id = ? OR affected_id = ? ' +
+                   'ORDER BY timestamp DESC'; // Fetch logs associated with the user or their affected records
+        sqlParams = [userId, userId]; // Use the provided user ID for both parameters
+    }
+
+    // Execute the query
+    con.query(sqlQuery, sqlParams, (error, result) => {
+        if (error) {
+            res.status(400).json(error); // Send a 400 status code with error if the query fails
+        } else {
+            res.status(200).json(result); // Send a 200 status code with the result if the query succeeds
+        }
+    });
+});
+
+// Route to fetch a user based on their email address
+app.get('/user/:email', (req, res) => {
+    const email = req.params.email; // Extract the email from the route parameter
+    const sqlQuery = `SELECT * FROM todo.users WHERE email='${email}'`; // SQL query to fetch user by email
+
+    // Execute the SQL query
+    con.query(sqlQuery, (err, result) => {
+        if (err) {
+            res.status(400).json(err); // Send a 400 response code with error information if query fails
+        } else {
+            console.log(result); // Log the result to the console for debugging
+            res.status(200).json(result); // Send a 200 response code with the result if query succeeds
+        }
+    });
+});
+
+// Route to add a new user to the database
+app.post('/users', (req, resp) => {
+    const data = req.body; // Extract user data from the request body
+
+    // Insert the user into the users table
+    con.query("INSERT INTO todo.users SET ?", data, (error, results) => {
+        if (error) {
+            resp.status(400).json(error); // Send a 400 response code with error if insertion fails
+        } else {
+            resp.status(200).json(results); // Send a 200 response code with the result if insertion succeeds
+        }
+    });
+});
+
+// Route to fetch tasks for a specific user
+app.get('/users/tasks', (req, res) => {
+    const userid = req.query.userid; // Extract user ID from the request query
+    const sqlQuery = `SELECT * FROM todo.tasks WHERE user_id= ${userid}`; // SQL query to fetch tasks for the given user
+
+    // Execute the SQL query
+    con.query(sqlQuery, (error, result) => {
+        if (error) {
+            res.status(400).json(error); // Send a 400 response code with error if query fails
+        } else {
+            res.status(200).json(result); // Send a 200 response code with the result if query succeeds
+        }
+    });
+});
+
+// Route to create a new item associated with a task
+app.post('/items', (req, resp) => {
+    const { item_name, quantity, task_id, user_id } = req.body; // Destructure necessary fields from the request body
+
+    // Query to fetch the task information
+    const taskQuery = `SELECT * FROM tasks t
+                       JOIN users u ON u.id = t.user_id
+                       WHERE t.id = ?`;
+    con.query(taskQuery, [task_id], (error, taskResults) => {
+        console.log('task_id is :', task_id); // Log the task ID for debugging
+        if (error) {
+            return resp.status(500).json({ error }); // Send a 500 response code with error if the query fails
+        }
+
+        if (taskResults.length === 0) {
+            return resp.status(404).json({ error: 'Task not found' }); // Send a 404 response code if the task does not exist
+        }
+
+        const taskName = taskResults[0].task_name; // Extract task name
+        const taskUserId = taskResults[0].user_id; // Extract user ID associated with the task
+        const taskUserName = taskResults[0].name; // Extract user name associated with the task
+
+        // Query to fetch the user information
+        const userQuery = 'SELECT is_admin, name, id FROM users WHERE id = ?';
+        con.query(userQuery, [user_id], (error, userResults) => {
+            if (error) {
+                return resp.status(500).json({ error }); // Send a 500 response code with error if the query fails
+            }
+
+            if (userResults.length === 0) {
+                return resp.status(404).json({ error: 'User not found' }); // Send a 404 response code if the user does not exist
+            }
+
+            const isCreatingAsAdmin = userResults[0].is_admin; // Check if the user is an admin
+            const userName = userResults[0].name; // Extract the name of the user
+
+            // Construct the log message based on whether the user is an admin or not
+            let logMessage = '';
+            if (isCreatingAsAdmin === 1) {
+                logMessage = `The administrator created an item ${item_name} with quantity ${quantity} in task ${taskName} on user ${taskUserName}`;
+            } else {
+                logMessage = `The user ${userName} created an item ${item_name} with quantity ${quantity} in task ${taskName}`;
+            }
+
+            // Insert the item into the items table
+            const itemQuery = 'INSERT INTO items (item_name, quantity, task_id) VALUES (?, ?, ?)';
+            con.query(itemQuery, [item_name, quantity, task_id], (error, itemResult) => {
+                if (error) {
+                    return resp.status(500).json({ error }); // Send a 500 response code if insertion fails
+                }
+
+                // Insert the log message into the logs table
+                const logQuery = 'INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?, ?)';
+                con.query(logQuery, [logMessage, user_id, taskUserId], (error, logResult) => {
+                    if (error) {
+                        console.error('Error while logging item creation:', error); // Log error during logging process
+                    }
+                });
+
+                // Query to fetch the email of the user
+                const Query = 'SELECT * FROM USERS WHERE ID = ?';
+                con.query(Query, [user_id], (error, QueryResult) => {
+                    if (error) {
+                        console.error('Error while fetching user email:', error); // Log error if fetching user email fails
+                    }
+
+                    // Send an email notification for item creation
+                    sendItemCreatedEmail(QueryResult[0].email, userName, item_name, quantity, taskName, isCreatingAsAdmin, taskUserName);
+
+                    // Send a success response with email information
+                    return resp.status(200).json({ message: 'Item created successfully', email: QueryResult[0].email });
+                });
+            });
+        });
+    });
+});
+
+// Function to send an email when a task is created
+function sendTaskCreatedEmail(userEmail, userName, taskName, Admin, name) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to store the email subject
+  let emailContent = ''; // Variable to store the email content
+
+  // Check if the task is created by an administrator
+  if (Admin === 1) {
+    emailSubject = 'Task Created by Administrator';
+    emailContent = `The administrator has created a new task '${taskName}' for user ${name}.`;
+  } else {
+    emailSubject = 'Task Created';
+    emailContent = `Hi ${userName},\n\nYou have created a new task '${taskName}'.`;
+  }
+
+  console.log(Admin);
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: userEmail,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Function to send an email when an item is created
+function sendItemCreatedEmail(userEmail, userName, itemName, quantity, task_name, Admin, Name) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to store the email subject
+  let emailContent = ''; // Variable to store the email content
+
+  console.log(Admin);
+
+  // Check if the item is created by an administrator
+  if (Admin === 1) {
+    emailSubject = 'Item Created by Administrator';
+    emailContent = `The administrator has created the item ${itemName} with quantity ${quantity} in task '${task_name}' for user ${Name}.`;
+  } else {
+    emailSubject = 'Item Created';
+    emailContent = `Hi ${userName},\n\nYou have created a new item ${itemName} with quantity ${quantity} in task '${task_name}'.`;
+  }
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: userEmail,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Function to send an email when a task is updated
+function sendTaskUpdatedEmail(email, previousTaskName, taskName, isCreatingAsAdmin, userName) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to store the email subject
+  let emailContent = ''; // Variable to store the email content
+
+  console.log(isCreatingAsAdmin);
+
+  // Check if the task is updated by an administrator
+  if (isCreatingAsAdmin === 1) {
+    emailSubject = 'Task Updated by Administrator';
+    emailContent = `The administrator updated the task "${previousTaskName}" to "${taskName}" for user ${userName}.`;
+  } else {
+    emailSubject = 'Task Updated by User';
+    emailContent = `User ${userName} updated the task "${previousTaskName}" to "${taskName}".`;
+  }
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: email,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Function to send an email when an item is updated
+function sendItemUpdatedEmail(email, prevItemName, prevQuantity, newItemName, newQuantity, userName, isAdmin, userId, taskName) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to store the email subject
+  let emailContent = ''; // Variable to store the email content
+
+  // Check if the item is updated by an administrator
+  if (isAdmin === 1) {
+    emailSubject = 'Item Updated by Administrator';
+    emailContent = `The administrator updated the item "${prevItemName}" (quantity: ${prevQuantity}) to "${newItemName}" (quantity: ${newQuantity}) in task ${taskName} for user ${userId}.`;
+  } else {
+    emailSubject = 'Item Updated by User';
+    emailContent = `The user "${userName}" updated the item "${prevItemName}" (quantity: ${prevQuantity}) to "${newItemName}" (quantity: ${newQuantity}) in task ${taskName}.`;
+  }
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: email,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Function to send an email when an item is deleted
+function sendDeleteItemEmail(userEmail, userName, item_name, quantity, Admin, Name) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to store the email subject
+  let emailContent = ''; // Variable to store the email content
+
+  console.log(Admin);
+
+  // Check if the item is deleted by an administrator
+  if (Admin === 1) {
+    emailSubject = 'Item Deleted by Administrator';
+    emailContent = `The administrator has deleted the item ${item_name} with quantity ${quantity} in task ${Name} for user ${userName}.`;
+  } else {
+    emailSubject = 'Item Deleted by User';
+    emailContent = `User ${userName} has deleted the item ${item_name} with quantity ${quantity} in task ${Name}.`;
+  }
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: userEmail,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Function to send an email when a new user is registered
+function sendRegisterCreatedEmail(userEmail, userName) {
+  // Configure the mail transporter using Gmail and the provided credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = 'New User Created'; // Set the email subject
+  let emailContent = `A new user ${userName} with email ${userEmail} registered in the To-Do List application.`; // Set the email content
+
+  // Define the email options such as sender, recipient, subject, and content
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: userEmail,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email using the transporter
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+// Send email when a task is deleted
+function sendDeleteTaskEmail(Email, taskOwnerName, taskName, isDeletingAsAdmin) {
+  // Create a transporter object using the Gmail service and credentials
+  const transporter = nodeMailer.createTransport({
+    service: 'Gmail',
+    auth: {
+      user: "nicksterghs@gmail.com",
+      pass: "ggmnrcnfvfomsyzq"
+    }
+  });
+
+  let emailSubject = ''; // Variable to hold the email subject
+  let emailContent = ''; // Variable to hold the email content
+
+  console.log(isDeletingAsAdmin);
+
+  // Determine if the task is being deleted by an administrator or a user
+  if (isDeletingAsAdmin === 1) {
+    emailSubject = 'Task deleted by Administrator';
+    emailContent = `The administrator has deleted the task '${taskName}' for user ${taskOwnerName}.`;
+  } else {
+    emailSubject = 'Task deleted by User';
+    emailContent = `User ${taskOwnerName} has deleted the task '${taskName}'.`;
+  }
+
+  // Define email options
+  const mailOptions = {
+    from: "nicksterghs@gmail.com",
+    to: Email,
+    subject: emailSubject,
+    text: emailContent
+  };
+
+  // Send the email
+  transporter.sendMail(mailOptions, (error, info) => {
+    if (error) {
+      console.error('Error while sending email:', error);
+    } else {
+      console.log('Email sent:', info.response);
+    }
+  });
+}
+
+// Endpoint to create a task
+app.post('/tasks/:id', (req, resp) => {
+  const task_name = req.body.task_name; // Task name provided in the request body
+  const user_id = req.params.id; // ID of the user associated with the task
+  const actor = req.body.user_id; // ID of the user performing the action (could be admin or regular user)
+
+  // Fetch the information of the user performing the action
+  const actorQuery = `SELECT * FROM users WHERE id = ?`;
+  con.query(actorQuery, [actor], (error, userResults) => {
+    if (error) {
+      return resp.status(500).json({ error });
+    }
+
+    if (userResults.length === 0) {
+      return resp.status(404).json({ error: 'User not found' });
+    }
+
+    // Select a specific admin user by their ID
+    const adminQuery = `SELECT * FROM users WHERE id = 146`;
+    con.query(adminQuery, (error, adminResults) => {
+      if (error) {
+        return resp.status(500).json({ error });
+      }
+
+      if (adminResults.length === 0) {
+        return resp.status(404).json({ error: 'Admin not found' });
+      }
+
+      const id = adminResults[0].id;
+      const userName = userResults[0].name;
+      const isCreatingAsAdmin = userResults[0].is_admin;
+      const Admin = userResults[0].is_admin === 1;
+      console.log('Email:', userResults[0].email);
+
+      // Fetch the details of the user who will be assigned the task
+      const userQuery = `SELECT * FROM users WHERE id = ?`;
+      con.query(userQuery, [user_id], (error, uResults) => {
+        if (error) {
+          return resp.status(500).json({ error });
+        }
+
+        if (uResults.length === 0) {
+          return resp.status(404).json({ error: 'User not found' });
+        }
+
+        // Construct a log message indicating who created the task and for whom
+        let logMessage = '';
+        if (isCreatingAsAdmin === 1) {
+          logMessage = `The administrator created the task: '${task_name}' for user ${uResults[0].name}.`;
+        } else {
+          logMessage = `The user ${userName} created the task: '${task_name}'.`;
+        }
+
+        console.log('Email:', uResults[0].email);
+
+        // Insert the new task into the database
+        const taskInsertQuery = 'INSERT INTO tasks (task_name, user_id) VALUES (?, ?)';
+        con.query(taskInsertQuery, [task_name, user_id], (error, taskInsertResult) => {
+          if (error) {
+            return resp.status(500).json({ error });
+          }
+
+          const taskId = taskInsertResult.insertId;
+          console.log("user_id : ", user_id);
+
+          // Log the task creation in the logs table
+          const logQuery = 'INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?, ?)';
+          con.query(logQuery, [logMessage, user_id, id], (error, logResult) => {
+            if (error) {
+              console.error('Error while logging task creation:', error);
+            }
+          });
+
+          // Send a task creation email to the user
+          sendTaskCreatedEmail(uResults[0].email, userName, task_name, isCreatingAsAdmin, uResults[0].name);
+          console.log('Email:', uResults[0].email);
+
+          return resp.status(200).json({ message: 'Task created successfully', email: uResults[0].email });
+        });
+      });
+    });
+  });
+});
+
+// Endpoint to update a task
+app.put('/tasks/:id', (req, res) => {
+  const taskId = req.params.id; // ID of the task being updated
+  const taskName = req.body.task_name; // New task name provided in the request body
+  const actor = req.body.user_id; // ID of the user performing the update
+
+  // Validate if taskName is provided
+  if (!taskName) {
+    return res.status(400).json({ error: 'Please provide a task name' });
+  }
+
+  // Fetch information of the user performing the update (admin or regular user)
+  con.query('SELECT is_admin, id, name FROM users WHERE id = ?', [actor], (error, actorResults) => {
+    if (error) {
+      return res.status(500).json({ error });
+    }
+    console.log(actor);
+
+    if (actorResults.length === 0) {
+      return res.status(404).json({ error: 'Actor not found' });
+    }
+
+    const actorId = actorResults[0].id;
+    const actorName = actorResults[0].name;
+    const isCreatingAsAdmin = actorResults[0].is_admin;
+    console.log(isCreatingAsAdmin);
+
+    // Check if the actor is an administrator
+    if (isCreatingAsAdmin === 1) {
+      // Fetch information about the task owner
+      con.query('SELECT users.id, users.email, users.name, tasks.task_name AS previous_task_name FROM users INNER JOIN tasks ON users.id = tasks.user_id WHERE tasks.id = ?', [taskId], (error, Results) => {
+        if (error) {
+          return res.status(500).json({ error });
+        }
+        console.log(taskId);
+
+        if (Results.length === 0) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        const userName = Results[0].name;
+        const previousTaskName = Results[0].previous_task_name;
+        const id = Results[0].id;
+
+        // Update the task name
+        con.query('UPDATE tasks SET task_name = ? WHERE id = ?', [taskName, taskId], (error, taskResults) => {
+          if (error) {
+            return res.status(500).json({ error });
+          }
+
+          if (taskResults.affectedRows === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+          }
+
+          // Log the update in the logs table
+          const logMessage = `The administrator updated the task "${previousTaskName}" to "${taskName}" for user ${userName}.`;
+          con.query('INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?, ?)', [logMessage, actorId, id], (error) => {
+            if (error) {
+              console.error('Error while logging task update:', error);
+            }
+          });
+
+          // Send an email about the task update
+          sendTaskUpdatedEmail(Results[0].email, previousTaskName, taskName, isCreatingAsAdmin, userName);
+          return res.status(200).json({ message: 'Task updated successfully' });
+        });
+      });
+    } else {
+      // Regular user updating a task
+      con.query('SELECT users.name, users.email, tasks.task_name AS previous_task_name FROM users INNER JOIN tasks ON users.id = tasks.user_id WHERE tasks.id = ?', [taskId], (error, userResults) => {
+        if (error) {
+          return res.status(500).json({ error });
+        }
+
+        if (userResults.length === 0) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        const userName = userResults[0].name;
+        const previousTaskName = userResults[0].previous_task_name;
+        const id = userResults[0].id;
+
+        // Fetch admin user ID
+        con.query('SELECT id FROM users WHERE is_admin = 1', (error, results) => {
+          if (error) {
+            return res.status(500).json({ error });
+          }
+
+          if (results.length === 0) {
+            return res.status(404).json({ error: 'Admin user not found' });
+          }
+
+          const adminId = results[0].id;
+
+          // Update the task name
+          con.query('UPDATE tasks SET task_name = ? WHERE id = ?', [taskName, taskId], (error, taskResults) => {
+            if (error) {
+              return res.status(500).json({ error });
+            }
+
+            if (taskResults.affectedRows === 0) {
+              return res.status(404).json({ error: 'Task not found' });
+            }
+
+            // Log the update in the logs table
+            const logMessage = `User ${userName} updated the task "${previousTaskName}" to "${taskName}".`;
+            con.query('INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?, ?)', [logMessage, actorId, adminId], (error) => {
+              console.log('id is : ', id);
+              console.log('actor id is: ', actorId);
+              if (error) {
+                console.error('Error while logging task update:', error);
+              }
+            });
+
+            // Send an email about the task update
+            sendTaskUpdatedEmail(userResults[0].email, previousTaskName, taskName, isCreatingAsAdmin, userName);
+            return res.status(200).json({ message: 'Task updated successfully' });
+          });
+        });
+      });
+    }
+  });
+});
+
+// Route to delete a task by its ID
+app.delete('/tasks/:id', (req, resp) => {
+  const taskId = req.params.id; // Get the task ID from the request parameters
+  const actor = req.body.user_id; // Get the user ID performing the action from the request body
+
+  // Fetch the user information from the users table using the provided actor ID
+  const actorQuery = `SELECT * FROM users WHERE id = ?`;
+  con.query(actorQuery, [actor], (error, userResults) => {
+    if (error) {
+      return resp.status(500).json({ error }); // Handle database error
+    }
+
+    if (userResults.length === 0) {
+      return resp.status(404).json({ error: 'User not found' }); // If user not found, return a 404 error
+    }
+
+    const email = userResults[0].email; // Extract the email of the actor
+    const actorUser = userResults[0]; // Store actor's user information
+    const isDeletingAsAdmin = actorUser.is_admin; // Check if the actor is an admin
+
+    if (isDeletingAsAdmin === 1) {
+      // Admin is performing the deletion
+      const taskQuery = `SELECT * FROM tasks WHERE id = ?`;
+      con.query(taskQuery, [taskId], (error, taskResults) => {
+        if (error) {
+          return resp.status(500).json({ error }); // Handle database error
+        }
+
+        if (taskResults.length === 0) {
+          return resp.status(404).json({ error: 'Task not found' }); // Task not found
+        }
+
+        const task = taskResults[0]; // Store task information
+        const taskName = task.task_name; // Get the task name
+        const taskOwner = task.user_id; // Get the owner of the task
+
+        // Fetch the task owner's information from the users table
+        const ownerQuery = `SELECT * FROM users WHERE id = ?`;
+        con.query(ownerQuery, [taskOwner], (error, ownerResults) => {
+          if (error) {
+            return resp.status(500).json({ error }); // Handle database error
+          }
+
+          if (ownerResults.length === 0) {
+            return resp.status(404).json({ error: 'Task owner not found' }); // Task owner not found
+          }
+
+          const Email = ownerResults[0].email; // Get the owner's email
+          const ownerUser = ownerResults[0]; // Store owner's user information
+          const taskOwnerName = ownerUser.name; // Get the owner's name
+
+          // Delete the task as an admin
+          const deleteQuery = 'DELETE FROM tasks WHERE id = ?';
+          con.query(deleteQuery, [taskId], (error, deleteResult) => {
+            if (error) {
+              return resp.status(500).json({ error }); // Handle database error
+            }
+
+            // Log the deletion action
+            const logMessage = `The administrator deleted task "${taskName}" on user "${taskOwnerName}"`;
+            const logQuery = 'INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?,?)';
+            con.query(logQuery, [logMessage, actor, taskOwner], (error, logResult) => {
+              if (error) {
+                console.error('Error while logging task deletion:', error);
+                return resp.status(500).json({ error: 'Error while logging task deletion' }); // Handle logging error
+              }
+
+              // Send an email to notify the task owner
+              sendDeleteTaskEmail(Email, taskOwnerName, taskName, isDeletingAsAdmin);
+              return resp.status(200).json({ message: 'Task deleted successfully' }); // Respond with success message
+            });
+          });
+        });
+      });
+    } else {
+      // User (not admin) is performing the deletion
+      const taskQuery = `SELECT * FROM tasks WHERE id = ?`;
+      con.query(taskQuery, [taskId], (error, taskResults) => {
+        if (error) {
+          return resp.status(500).json({ error }); // Handle database error
+        }
+
+        if (taskResults.length === 0) {
+          return resp.status(404).json({ error: 'Task not found' }); // Task not found
+        }
+
+        const task = taskResults[0]; // Store task information
+        const taskName = task.task_name; // Get the task name
+        const taskOwnerId = task.user_id; // Get the owner ID of the task
+
+        // Perform the deletion as the task owner
+        const deleteQuery = 'DELETE FROM tasks WHERE id = ?';
+        con.query(deleteQuery, [taskId], (error, deleteResult) => {
+          if (error) {
+            return resp.status(500).json({ error }); // Handle database error
+          }
+
+          // Log the task deletion action
+          const logMessage = `User "${actorUser.name}" deleted task "${taskName}"`;
+          const logQuery = 'INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?,?)';
+          con.query(logQuery, [logMessage, actor, taskOwnerId], (error, logResult) => {
+            if (error) {
+              console.error('Error while logging task deletion:', error);
+              return resp.status(500).json({ error: 'Error while logging task deletion' }); // Handle logging error
+            }
+
+            // Send an email to notify the actor (who is the owner)
+            sendDeleteTaskEmail(email, actorUser.name, taskName, isDeletingAsAdmin);
+            return resp.status(200).json({ message: 'Task deleted successfully' }); // Respond with success message
+          });
+        });
+      });
+    }
+  });
+});
+
+// Route for user login
+app.post('/login', (req, res) => {
+  const { email, password } = req.body; // Get email and password from request body
+
+  // Validate the format of the email
+  if (!validateEmail(email)) {
+    res.status(400).json({ message: 'Invalid email format' }); // If email format is invalid, return an error
+    return;
+  }
+
+  // Fetch user information based on the email and password provided
+  con.query(
+    `SELECT * FROM users WHERE email = '${email}' AND password = '${password}'`,
+    (error, result) => {
+      if (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Server error' }); // Handle database error
+        return;
+      }
+
+      if (result.length === 0) {
+        res.status(401).json({ message: 'Invalid email or password' }); // If no matching user, return unauthorized
+        return;
+      }
+
+      const user = result[0]; // Get the user's information
+      if (user.is_admin === 1) {
+        // If the user is an admin, fetch all regular users' information
+        con.query('SELECT * FROM users WHERE is_admin = 0', (error, regularUsers) => {
+          if (error) {
+            console.error(error);
+            res.status(500).json({ message: 'Server error' }); // Handle database error
+            return;
+          }
+
+          res.status(200).json({ user, regularUsers }); // Return admin user data and list of regular users
+        });
+      } else {
+        // If the user is not an admin, return the user's information
+        res.status(200).json({ user });
+      }
+    }
+  );
+});
+// Function to validate the format of an email using a regular expression
+function validateEmail(email) {
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/; // Regular expression to validate standard email formats
+  return re.test(email);
+}
+
+// Route to retrieve all logs from the database
+app.get('/logs', (req, res) => {
+  // Query the 'logs' table to get all log entries
+  con.query('SELECT * FROM logs', (error, result) => {
+    if (error) {
+      return res.status(400).json(error); // Send a 400 response if an error occurs
+    }
+    res.status(200).json(result); // Send a 200 response with the logs data
+  });
+});
+
+// Route to handle user registration
+app.post('/registration', (req, resp) => {
+  const { name, email, password } = req.body;
+
+  // Check if all required fields are provided
+  if (!name || !email || !password) {
+    return resp.status(400).json({ error: 'Please provide all the required fields' });
+  }
+
+  // Validate email format
+  if (!validateEmail(email)) {
+    return resp.status(400).json({ error: 'Please provide a valid email address' });
+  }
+
+  // Insert new user into the 'users' table
+  con.query('INSERT INTO users(name, email, password) VALUES(?, ?, ?)', [name, email, password], (error, result) => {
+    if (error) {
+      return resp.status(400).json(error); // Send a 400 response if there's an error with the query
+    }
+
+    // Log the registration event
+    const logMessage = `The user ${name} registered with email ${email}`;
+    con.query('INSERT INTO logs(log_message, user_id) VALUES (?, ?)', [logMessage, result.insertId], (error, result) => {
+      if (error) {
+        console.error(error); // Log the error if unable to insert the log entry
+      }
+    });
+
+    // Send a registration confirmation email
+    sendRegisterCreatedEmail(email, name);
+    resp.status(200).json(result); // Send a 200 response with the result of the registration
+  });
+});
+
+// Route to get all tasks for an admin or tasks for a specific user based on the user's role
+app.get('/tasks', (req, res) => {
+  const { user_id } = req.query;
+  const isAdmin = req.headers['is-admin'] === 'true'; // Check if the requester is an admin
+
+  // If not an admin and no user ID is provided, return an error
+  if (!isAdmin && !user_id) {
+    return res.status(400).json({ message: 'User ID is required' });
+  }
+
+  // Formulate the query based on the role of the user
+  let query = 'SELECT * FROM tasks';
+  if (!isAdmin) {
+    query += ` WHERE user_id = ${user_id}`; // Fetch only tasks that belong to the specific user if not an admin
+  }
+
+  // Execute the query to fetch tasks
+  con.query(query, (error, result) => {
+    if (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Server error' }); // Send a 500 response in case of an error
+    }
+
+    res.status(200).json(result); // Send a 200 response with the tasks data
+  });
+});
+
+// Route to get items for a specific task
+app.get('/tasks/items', (req, res) => {
+  const taskid = req.query.taskid; // Extract the task ID from query parameters
+
+  // SQL query to fetch all items related to a specific task
+  const sqlQuery = `SELECT * FROM todo.items WHERE items.task_id=${taskid}`;
+  console.log(sqlQuery); // Log the query for debugging purposes
+
+  // Execute the query to fetch items
+  con.query(sqlQuery, (error, result) => {
+    if (error) {
+      return res.status(400).json(error); // Send a 400 response if an error occurs
+    }
+    res.status(200).json(result); // Send a 200 response with the items data
+  });
+});
+
+// Route to update an item with a specific ID
+app.put('/items/:id', (req, res) => {
+  const itemId = req.params.id;
+  const { item_name, quantity, user_id: actor } = req.body;
+
+  // Validate that an item name is provided
+  if (!item_name) {
+    return res.status(400).json({ error: 'Please provide an item name' });
+  }
+
+  // Check if the actor is an admin
+  con.query('SELECT is_admin, id, name FROM users WHERE id = ?', [actor], (error, actorResults) => {
+    if (error) {
+      return res.status(500).json({ error });
+    }
+    if (actorResults.length === 0) {
+      return res.status(404).json({ error: 'Actor not found' });
+    }
+
+    const actorId = actorResults[0].id;
+    const actorName = actorResults[0].name;
+    const isUpdatingAsAdmin = actorResults[0].is_admin;
+
+    // Get the current item information
+    con.query(
+      `SELECT items.item_name AS prev_item_name, items.quantity AS prev_quantity, tasks.task_name, users.name AS user_name, users.email 
+       FROM items 
+       INNER JOIN tasks ON items.task_id = tasks.id 
+       INNER JOIN users ON tasks.user_id = users.id 
+       WHERE items.id = ?`, [itemId],
+      (error, prevItemResults) => {
+        if (error) {
+          return res.status(500).json({ error });
+        }
+        if (prevItemResults.length === 0) {
+          return res.status(404).json({ error: 'Item not found' });
+        }
+
+        const prevItem = prevItemResults[0];
+        const { prev_item_name, prev_quantity, task_name, user_name, email: userEmail } = prevItem;
+
+        // Update the item in the 'items' table
+        con.query('UPDATE items SET item_name = ?, quantity = ? WHERE id = ?', [item_name, quantity, itemId], (error, itemResults) => {
+          if (error) {
+            return res.status(500).json({ error });
+          }
+          if (itemResults.affectedRows === 0) {
+            return res.status(404).json({ error: 'Item not found' });
+          }
+
+          // Construct the log message based on whether the update was done by an admin or a regular user
+          const logMessage = isUpdatingAsAdmin
+            ? `The administrator updated the item "${prev_item_name}" (quantity: ${prev_quantity}) to "${item_name}" (quantity: ${quantity}) in task ${task_name} for user ${user_name}`
+            : `User "${actorName}" updated the item "${prev_item_name}" (quantity: ${prev_quantity}) to "${item_name}" (quantity: ${quantity}) in task ${task_name}`;
+
+          // Log the update action in the 'logs' table
+          con.query('INSERT INTO logs (log_message, user_id, affected_id) VALUES (?, ?, ?)', [logMessage, actorId, itemId], (error) => {
+            if (error) {
+              console.error('Error while logging item update:', error);
+            }
+          });
+
+          // Send an email notification about the item update
+          sendItemUpdatedEmail(userEmail, prev_item_name, prev_quantity, item_name, quantity, actorName, isUpdatingAsAdmin, task_name, user_name);
+          res.status(200).json({ message: 'Item updated successfully' }); // Send a 200 response upon successful update
+        });
+      }
+    );
+  });
+});
+
+// Route to delete an item with a specific ID
+app.delete('/items/:id', (req, res) => {
+  const itemId = req.params.id;
+  const actor = req.body.user_id;
+
+  // Get the details of the item being deleted
+  const itemQuery = 'SELECT item_name, quantity, task_id FROM items WHERE id = ?';
+  con.query(itemQuery, [itemId], (error, response) => {
+    if (error) {
+      return res.status(500).json({ error });
+    }
+    if (response.length === 0) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const { item_name, quantity, task_id } = response[0];
+
+    // Get details of the task owner associated with the item
+    const userQuery = 'SELECT users.id, users.name, users.email FROM tasks JOIN users ON tasks.user_id = users.id WHERE tasks.id = ?';
+    con.query(userQuery, [task_id], (error, userResults) => {
+      if (error) {
+        return res.status(500).json({ error });
+      }
+      if (userResults.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const { id: userId, name: userName, email: userEmail } = userResults[0];
+
+      // Get the name of the task associated with the item
+      const taskQuery = 'SELECT task_name FROM tasks WHERE id = ?';
+      con.query(taskQuery, [task_id], (error, taskResults) => {
+        if (error) {
+          return res.status(500).json({ error });
+        }
+        if (taskResults.length === 0) {
+          return res.status(404).json({ error: 'Task not found' });
+        }
+
+        const taskName = taskResults[0].task_name;
+
+        // Delete the item from the 'items' table
+        const deleteItemQuery = 'DELETE FROM items WHERE id = ?';
+        con.query(deleteItemQuery, [itemId], (error, result) => {
+          if (error) {
+            return res.status(500).json({ error });
+          }
+
+          // Log the deletion action in the 'logs' table
+          const logMessage = `User ${userName} deleted item "${item_name}" (quantity: ${quantity}) in task ${taskName}`;
+          con.query('INSERT INTO logs (log_message, user_id) VALUES (?, ?)', [logMessage, userId], (error) => {
+            if (error) {
+              console.error('Error while logging item deletion:', error);
+            }
+          });
+
+          // Send an email notification about the item deletion
+          sendItemDeletedEmail(userEmail, item_name, quantity, taskName, userName);
+          res.status(200).json({ message: 'Item deleted successfully' }); // Send a 200 response upon successful deletion
+        });
+      });
+    });
+  });
+});
